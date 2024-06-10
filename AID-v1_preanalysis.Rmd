@@ -1,0 +1,709 @@
+---
+title: "Gal1-OsTIR1(F74G) mNG-AID-3Myc experiment"
+subtitle: "Data: Pre-analysis and Data read-in for measurements"
+author: "EG"
+date: "September 04, 2023"
+output: 
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+editor_options:
+  chunk_output_type: console
+---
+
+```{r Knitr Setup}
+#The below command can be added to the section above for a different output.
+#runtime: shiny
+
+#Setting the default knitr options for each chunk here.
+#"warning" and "message" settings are set to F as the codes are pre-reviewed
+#If running a new dataset, this can be changed to true to see all/any problems
+#"error" is set to T so that the output is made and error checking can be done
+knitr::opts_chunk$set(echo = TRUE, fig.width = 20, fig.height = 12,
+                      warning = FALSE, message = FALSE, error = TRUE) 
+```
+
+```{r General Setup}
+#Set working directory
+setwd("~/Downloads/AID_libraries_2_AIDv1")
+PrimaryDirectory = getwd()
+
+#Load needed packages
+library(tidyverse)
+library(openxlsx)
+library(gitter)
+library(gridExtra)
+library(magick)
+
+#Set ggplot theme
+theme_set(theme_light(base_size=20))
+doc_theme <- theme_get()
+
+#Loading "Alphabet" list
+alphabet1536 <- c("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L",
+                  "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X",
+                  "Y", "Z", "AA", "AB", "AC", "AD", "AE", "AF")
+
+alphabet1536_rev <- 1:length(alphabet1536)
+names(alphabet1536_rev) <- alphabet1536
+
+#Loading the Experiment's annotation file
+load("20230904_mNG_AID_anno.rda")
+
+mNG_AID_anno <- mNG_AID_anno %>%
+  mutate(well = paste0(mNG_AID_anno$row_1536, sprintf("%02d", mNG_AID_anno$col_1536)),
+         plate = paste0("p", sprintf("%02d", mNG_AID_anno$plate_1536)))
+
+#Loading border colonies list
+BorderColonies <- read.xlsx("06_datasets/BorderColoniesList.xlsx", startRow = 1, colNames = TRUE, sheet = "Sheet1")
+
+```
+
+```{r Data directories}
+raw_img_folder <- "02_raw_photographs"
+raw_xlsx_folder <- "03_raw_plate_reader"
+analysis_folder <- "04_analysis"
+plots_folder <- "05_plots"
+dataset_folder <- "06_datasets"
+
+```
+
+
+```{r Functions}
+#Function for reading in excel files.
+Read_Screen_Data <- function(filename, filedirectory, channels, nplate, alternate_start = 0){
+  
+  #filename: name of the excel workbook with all the measurements
+  #filedirectory: the directory where the file is located
+  #channels: a vector of character strings specifying the channel labels
+  #nplate: number of plates within the file / to be imported
+  #alternate_start: if the first plate in the excel file is actually not the true plate 1, then a number can be given to indicate the first plate
+  
+  require(tidyverse)
+  require(openxlsx)
+  
+  #### Checks ####
+  #Check file is present.
+  filepath <- paste0(filedirectory,"/",filename)
+  
+  if(file.exists(filepath)){
+    print(paste("File given exists. Proceed to import."))
+  } else {
+    #print(paste("This file path does not exists:", filepath))
+    stop("File does not exists. Please check. ",
+         "Information given: ", filepath) }
+  
+  #Check if nplate is an integer.
+  if(nplate != round(nplate)){ stop("nplate must be an integer") }
+  
+  #Check if there is at least 1 channel given.
+  if(length(channels) == 0){ stop("There must be at least one channel to import") }
+  
+  #Check if alternate_start is an integer if another number is given.
+  if(alternate_start != round(alternate_start)){ stop("alternate_start must be an integer") }
+  
+  
+  #### Processing - General ####
+  #Get all the names of the sheets present in the file
+  sheetNames <- getSheetNames(file = filepath)
+  
+  #Get all the names of the channels to be imported
+  channellist <- channels
+  
+  #Decide how to proceed with number of sheets/plates to import
+  if(length(sheetNames) != nplate){
+    print(paste("WARNING. The number of sheets in Excel file does not match number of plates given."))
+    print(paste("Number of plates given:", nplate))
+    print(paste("Number of sheets present:", length(sheetNames)))
+    
+    #Check with user if they are sure with this incorrect number of plates
+    userCheck <- readline("WARNING. Proceed? (T/F)")
+    if(userCheck == "F" | userCheck == "f"){
+      stop("User aborted run. Please check number of plates given and number sheets in Excel file.")
+    } else if(userCheck == "T" | userCheck == "t"){} else {
+        stop("Unknown command. Exiting function.")}
+    
+  }
+  
+  if(length(sheetNames) > nplate){
+    ## This is in case the user would want to import only a subset of plates (although has to be from plate 1)
+    print(paste("User chooses to import only", nplate, "sheets out of", length(sheetNames), "sheets."))
+    print(paste("NOTE: Import starts from plate 1."))
+    
+    #Number of plates/sheets to process
+    chosenNumber <- as.integer(nplate)
+    
+  } else if(length(sheetNames) < nplate){
+    ## If the user puts nplate more than number of sheets, the code will just import what is possible.
+    print(paste("User input more plates than sheets available."))
+    print(paste("Proceeding with what is possible. Importing", length(sheetNames), "sheets."))
+    
+    #Number of plates/sheets to process
+    chosenNumber <- as.integer(length(sheetNames))
+    
+  } else if(length(sheetNames) == nplate){
+    
+    chosenNumber <- as.integer(length(sheetNames))
+    
+  }
+  
+  if(alternate_start != 0){
+    print(paste("User provided an alternate start plate. Sheet 1 will be plate",
+                alternate_start))
+    }
+  
+  #### Processing - Sheets ####
+  #Create table to hold all the data.
+  FinalTable <- data.frame()
+
+  #Loop to go through the Excel sheets
+  for(SN in 1:chosenNumber){
+    
+    if(alternate_start == 0){
+    #To see that the code is running
+    print(paste("Now processing sheet:", sheetNames[SN]))  
+    } else {
+    #To see that the code is running
+    print(paste0("Now processing sheet '", sheetNames[SN],
+                 "' as 'Plate ", alternate_start + SN-1, "'"))
+    }
+    
+    
+    
+    #Read in data
+    OriWorkbook <- read.xlsx(xlsxFile = filepath, sheet = sheetNames[SN], startRow = 1,
+                             colNames = F, rowNames = F, detectDates = T,
+                             skipEmptyRows = F, skipEmptyCols = F)
+    
+    #Convert all NAs into blanks
+    OriWorkbook[is.na(OriWorkbook)] <- ""
+    
+    #Create clearer plate name values
+    if(length(sheetNames) == 1 & sheetNames[1] == "Result sheet"){
+      sheetNames[1] <- "Plate 1"
+    }
+    
+    sheetNames_split <- str_split(sheetNames[SN], " ")
+    
+    if(alternate_start == 0){
+    plateNumber <- as.integer(sheetNames_split[[1]][2])
+    } else {
+    plateNumber <- as.integer(sheetNames_split[[1]][2]) + alternate_start-1
+    }
+    
+    #Locate the row with "Name" in the first column
+    nameLocation <- which(OriWorkbook$X1 == "Name")
+    
+    #Locate the start positions of all tables indicated by the "<>"
+    tableLocation <- which(OriWorkbook$X1 == "<>")
+    
+    #### Processing - Channels ####
+    #Check if all channels actually exists in the sheet
+    templist <- OriWorkbook$X2[nameLocation][OriWorkbook$X2[nameLocation] != ""]
+    if(!any(channellist %in% templist)){stop("None of the channels exist within the sheet.")}
+    
+    newchannellist <- channellist[channellist %in% templist]
+    
+    for(CH in 1:length(newchannellist)){
+      
+      workingChannel <- newchannellist[CH]
+      
+      #To see that the code is running
+      print(paste("Processing channel:", workingChannel))
+      
+      #Locate the row with channel name in the second column
+      channelLocation <- which(OriWorkbook$X2 == workingChannel)
+      
+      #Locate the nearest table to the label that is below it (not above it)
+      channeltableDiff <- tableLocation - channelLocation
+      
+      channeltableStart <- channelLocation + min(channeltableDiff[channeltableDiff > 0])
+      
+      #Time to subset out. Format is [row,col]
+      channeltable1 <- OriWorkbook[((channeltableStart+1):(channeltableStart+32)),]
+      colnames(channeltable1) <- OriWorkbook[((channeltableStart)),]
+      
+      #Change the column name for the row values from "<>"
+      colnames(channeltable1)[1] <- "row"
+      
+      #Collapse into a long format
+      channeltable2 <- pivot_longer(data = channeltable1, cols = 2:ncol(channeltable1),
+                                    names_to = "col", values_to = workingChannel) %>%
+        mutate(plate = paste(sprintf("p%02d", plateNumber))) %>%
+        select(1:2,4,3)
+      
+      #channeltable2[,workingChannel] <- ifelse(channeltable2[,workingChannel] == "OVER", NA, channeltable2[,workingChannel])
+      channeltable2[,4][channeltable2[,4] == "OVER"] <- NA
+      
+      if(CH == 1){
+        
+        #For first run, just assign the table
+        channelTable <- channeltable2
+        
+      } else {
+        
+        #Then, subsequent runs will use left_join
+        channelTable <- left_join(channelTable, channeltable2, by = c("row", "col", "plate"))
+        
+      }
+    }
+    
+    FinalTable <- rbind(FinalTable, channelTable)
+    
+  }
+  
+  FinalTable <- FinalTable %>%
+    mutate_at("col", as.integer) %>%
+    mutate_at(4:ncol(.), as.integer) %>%
+    mutate(well = paste0(row, sprintf("%02d", col)))
+
+  FinalTable
+}
+
+#Function for converting phenobooth images from png to jpeg
+convertImages_batch <- function(filedirectory_input, sourcePattern, filedirectory_output, all_files = T, crop_size = NULL){
+  
+  require(magick)
+  
+  #folders
+  input_folder <- filedirectory_input
+  output_folder <- filedirectory_output
+  print(paste0("Input folder:", input_folder))
+  print(paste0("Output folder:", output_folder))
+  
+  #files
+  inputfilelist <- dir(input_folder, pattern = sourcePattern)
+  #print(inputfilelist)
+  outputfilelist <- dir(output_folder, pattern = ".jpeg")
+  #print(outputfilelist)
+  
+  #Check if there is already files at the output folder with the expected same name.
+  inputlist <- str_sub(inputfilelist, 1, -5)
+  outputlist <- str_sub(outputfilelist, 1, -6)
+  
+  if(any(inputlist %in% outputlist)){
+    message("WARNING. There are files in the output folder with very similar names.
+            Proceeding with this function will overwrite files.")
+    userCheck <- readline("Proceed? (T/F)")
+    if(userCheck == "F" | userCheck == "f"){
+      stop("User aborted run.")
+    } else if(userCheck == "T" | userCheck == "t"){} else {
+        stop("Unknown command. Exiting function.")}
+  }
+  
+  #Crop sizes
+  if(!is.null(crop_size)) {
+    eff_crop_size <- crop_size
+    print(paste0("Crop size is user defined as:", eff_crop_size))
+  } else if(is.null(crop_size)) {
+    print(paste0("No crop size defined. Running based on input image size."))
+  }
+  
+  if(!all_files){
+    
+    print(inputfilelist)
+    
+    message("User wants to select specific files to convert.
+            Please input file numbers desired separated by commas or as a vector.
+            Example: 1,4,10 or c(2:7) or c(2:5,7,14:16)")
+    selected <- readline("Input vector of numbers:")
+    
+    
+    if(str_detect(selected, "c\\(") & str_detect(selected, "\\)")){
+      #If the input has the format of "c( ... )", then do this.
+      selected <- eval(parse(text = selected))
+      
+      } else if(!(str_detect(selected, "c\\(") & str_detect(selected, "\\)"))){
+        #If the input is just a string of numbers without c(), eg. 1,4,7,15, this do this.
+        selected <- as.numeric(unlist(strsplit(selected, "[[:punct:][:space:]]+")))
+        
+      } else {
+        stop("Input format incorrect. Exiting function.")
+      }
+    
+    #print((selected))
+    #print(is.vector(selected))
+    #print(inputfilelist[selected])
+    #print(any(is.na(inputfilelist[selected])))
+    
+    if(is.vector(selected) & !any(is.na(inputfilelist[selected]))){
+      inputfilelist <- inputfilelist[selected]
+      message(paste0("User selected these files only:"))
+      print(inputfilelist)
+      
+    } else if(!is.numeric(selected)){
+      stop("Input is not a vector of numbers. Please provide only a vector of numbers.
+           Exiting function.")
+    } else if(!any(is.na(inputfilelist[selected]))){
+      stop("Selection is out of bounds. Number for file selection is not within list of files.
+           Exiting function.")
+    }
+  }
+
+  #Do the conversion
+  for (p in 1:length(inputfilelist)) {
+    
+    inputfilename <- paste(input_folder, inputfilelist[p], sep = "/")
+    img <- image_read(path = inputfilename, strip = T)
+    
+    image_size_table <- image_info(img)
+    if(is.null(crop_size)){
+      image_width <- image_size_table$width
+      image_height <- image_size_table$height
+      print(paste("Input image has measurements of width x height:", image_width,"x", image_height))
+      
+      if(image_width == 2560 & image_height == 1920) {
+        eff_crop_size <- "1480x990+530+420" #For 2560x1920
+        
+      } else if(image_width == 4128 & image_height == 3096) {
+        eff_crop_size <- "2400x1600+850+680" #For 4128x3096
+        
+      } else {
+        print(paste("Image size is not within pre-defined formats.",
+                    "Please provide values for the crop size needed.",
+                    "See ?image_crop.",
+                    "Skipping file:", inputfilelist[p]))
+      }
+    }
+    
+    if(!is.null(eff_crop_size)) {
+      img2 <- image_crop(img, eff_crop_size)
+      img3 <- image_convert(img2, type = 'grayscale')
+      img4 <- image_modulate(img3, brightness = 80)
+      
+      outputfilename <- paste0(paste(output_folder, str_sub(inputfilelist[p], 1, -5), sep = "/"), ".jpeg")
+      image_write(image = img4, path = outputfilename, format = "jpeg", quality = 100)
+    }
+    
+  }
+  
+  #Clear memory after opening and converting large files
+  ## Maybe I have to move this into the loop above instead of at the end.
+  gc(verbose = FALSE)
+  
+}
+
+convertImages_single <- function(filedirectory_input, filename_input, filedirectory_output, crop_size = NULL){
+  
+  require(magick)
+  
+  #folders
+  input_folder <- filedirectory_input
+  output_folder <- filedirectory_output
+  print(paste0("Input folder:", input_folder))
+  print(paste0("Output folder:", output_folder))
+  
+  #files
+  outputfilelist <- dir(output_folder, pattern = ".jpeg")
+  
+  #Check if there is already files at the output folder with the expected same name.
+  inputlist <- str_sub(filename_input, 1, -5)
+  outputlist <- str_sub(outputfilelist, 1, -6)
+  
+  if(any(inputlist %in% outputlist)){
+    message("WARNING. There are files in the output folder with very similar names.
+            Proceeding with this function will overwrite files.")
+    userCheck <- readline("Proceed? (T/F)")
+    if(userCheck == "F" | userCheck == "f"){
+      stop("User aborted run.")
+    } else if(userCheck == "T" | userCheck == "t"){} else {
+        stop("Unknown command. Exiting function.")}
+  }
+  
+  #Crop sizes
+  if(!is.null(crop_size)) {
+    eff_crop_size <- crop_size
+    print(paste0("Crop size is user defined as:", eff_crop_size))
+  } else if(is.null(crop_size)) {
+    print(paste0("No crop size defined. Running based on input image size."))
+  }
+
+  #Do the conversion
+  inputfilename <- paste(input_folder, filename_input, sep = "/")
+  img <- image_read(path = inputfilename, strip = T)
+  
+  image_size_table <- image_info(img)
+  if(is.null(crop_size)){
+    image_width <- image_size_table$width
+    image_height <- image_size_table$height
+    print(paste("Input image has measurements of width x height:", image_width,"x", image_height))
+    
+    if(image_width == 2560 & image_height == 1920) {
+      eff_crop_size <- "1480x990+530+420" #For 2560x1920
+      
+    } else if(image_width == 4128 & image_height == 3096) {
+      eff_crop_size <- "2400x1600+850+680" #For 4128x3096
+      
+    } else {
+      gc(verbose = FALSE)
+      stop(paste("Image size is not within pre-defined formats.",
+                  "Please provide values for the crop size needed.",
+                  "See ?image_crop.",
+                  "Skipping file:", filename_input))
+    }
+  }
+  
+  img2 <- image_crop(img, eff_crop_size)
+  img3 <- image_convert(img2, type = 'grayscale')
+  img4 <- image_modulate(img3, brightness = 80)
+  
+  outputfilename <- paste0(paste(output_folder, str_sub(filename_input, 1, -5), sep = "/"), ".jpeg")
+  image_write(image = img4, path = outputfilename, format = "jpeg", quality = 100)
+  
+  
+  #Clear memory after opening and converting large files
+  ## Maybe I have to move this into the loop above instead of at the end.
+  gc(verbose = FALSE)
+  
+}
+
+```
+
+This document contains the workflow for read-in of data from TECAN measurements and phenobooth images of the mNG-AID*-3Myc experiment performed with the mNG-tagged (mNeonGreen) strains. The data is checked for any plate shift effects. Then, the data is transformed to use the high-gain measurements.
+
+The workflow should be:
+
+
+# Image data
+
+## Photograph Segmentation
+
+```{r photoseg, include = FALSE, eval = FALSE}
+## Segment Imaging plates photographs ####
+raw_img_folder_Img <- paste(PrimaryDirectory, raw_img_folder, "Images", sep = "/")
+analysis_folder_Img <- paste(PrimaryDirectory, analysis_folder, "Images", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_Img,
+                    sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_Img)
+
+#head(dir(analysis_folder_Img, pattern=".jpeg"))
+setwd(analysis_folder_Img)
+gitter.batch(analysis_folder_Img, plate.format=1536, verbose="p",
+             grid.save=analysis_folder_Img, dat.save=analysis_folder_Img)
+
+#setwd(analysis_folder_Img)
+nPlates <- 96
+photoNamesImg <- dir(analysis_folder_Img, pattern = "jpeg.dat")
+photoDataImg <- data.frame()
+for (i in 1:nPlates) {
+  photoImg <- gitter.read(photoNamesImg[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataImg <- bind_rows(photoDataImg, photoImg)
+}
+names(photoDataImg)[3:4] <- c("sizeImg","circularityImg")
+#photoDataImg <- photoDataImg %>%
+setwd(PrimaryDirectory)
+save(photoDataImg, file = "photoData_Img.rda")
+
+load("photoData_Img.rda")
+
+```
+
+## Measurement Data Read-In
+
+```{r OE data read-in, include = FALSE, eval = FALSE}
+#Data location
+tempfilelist <- dir(raw_xlsx_folder, pattern = ".xlsx")
+tempfilelist
+
+#I have several files due to stacker issue and different measurement dates/timepoints
+rename_list <- paste0("df", str_sub(tempfilelist, 16, -6))
+rename_list
+
+df_all <- data.frame()
+for(n in 1:length(tempfilelist)){
+  df_temp <- Read_Screen_Data(filename = tempfilelist[n],
+                              filedirectory = raw_xlsx_folder,
+                              channels = c("mNG_lo", "mNG_hi"),
+                              nplate = 1)%>%
+
+  mutate(plate=paste(sprintf("p%02d", n))) #Necessary to give the right name to the plates
+  df_all <- rbind(df_all, df_temp)
+  
+
+
+  assign(rename_list[n], df_temp)
+
+  rm(df_temp)
+}
+
+str(df_all)
+
+save(df_all, file = "rawScreenDataTable.rda")
+
+```
+
+
+```{r OE append annotation and photodata, include = FALSE, eval = FALSE}
+#Load necessary values and data if reset/not continuous
+load("rawScreenDataTable.rda")
+
+# Combine data frame with photodata
+load("photoData_Img.rda")
+
+
+photoDataImg$well <- paste0(photoDataImg$row1536, sprintf("%02d", photoDataImg$col))
+
+
+df1 <- left_join(df_all, photoDataImg %>%
+                   select(sizeImg, circularityImg, plate, well),
+                 by = c("plate", "well"))
+
+
+# Combine data frame with annotation file
+df3 <- left_join(mNG_AID_anno, df1, by = c("plate", "well"))
+
+save(df3, file = "dataTableRaw.rda")
+
+```
+
+
+CHECK WITH JOHN
+
+
+```{r OE plateshift check, include = FALSE, eval = FALSE}
+# Filtering border colonies
+df_noBorder <- anti_join(df3, BorderColonies)
+
+# Plotting the plateshift boxplot
+dfplateShift_wBorder <- df3 %>% filter(sample_type == "sample")
+dfplateShift_NoBorder <- df_noBorder %>% filter(sample_type == "sample")
+
+plateShift <- grid.arrange(
+  ggplot(dfplateShift_wBorder, aes(as.factor(plate_1536), log2(mNG_lo))) +
+    geom_boxplot(fill = "darkgreen") +
+    labs(x = "mNG",
+         y = "log2(mNG)", title = "WT fluorescence level with Border colonies") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)),
+  ggplot(dfplateShift_NoBorder, aes(as.factor(plate_1536), log2(mNG_lo))) +
+    geom_boxplot(fill = "darkgreen") +
+    labs(x = "mNG",
+         y = "log2(mNG)", title = "WT fluorescence level without Border colonies") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)),
+  nrow = 2)
+plot(plateShift)
+
+ggsave(filename = paste((format(Sys.time(), "%Y%m%d_%H%M")), "_ShiftedPlates_All.pdf", sep = ""), 
+       plot = plateShift, device = "pdf", dpi = "retina",
+       path = paste(PrimaryDirectory, plots_folder, sep = "/"), height=28, width=25, units="in")
+
+plateSd_wBorder <- dfplateShift_wBorder %>%  
+  summarize(plateSd=sd(log2(mNG_lo), na.rm=TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(plateSd))
+
+plateSd_NoBorder <- dfplateShift_NoBorder %>% 
+  summarize(plateSd=sd(log2(mNG_lo), na.rm=TRUE)) %>%
+  ungroup() %>%
+  arrange(desc(plateSd))
+
+plateSd_wBorder
+plateSd_NoBorder
+
+```
+
+### OE Gain adjustment
+
+```{r OE Adjusting data for high gain use, include = FALSE, eval = FALSE}
+#Joining and rearranging columns
+df_HiLo <- df3
+colnames(df_HiLo)[30:31] <- c('mNGLo','mNGHi')
+
+#Calculating the ratio between High and Low gains
+#df_HiLo$mCherry <-(df_HiLo$mCherryHi/df_HiLo$mCherryLo)
+df_HiLo$mNG <-(df_HiLo$mNGHi/df_HiLo$mNGLo)
+
+#Check to see if there are any where there is not even a value for the low gain
+#Should be 0 obs.
+#checkred <- subset(df_HiLo, is.na(mCherry) & is.na(mCherryLo))
+checkgreen <- subset(df_HiLo, is.na(mNG) & is.na(mNGLo))
+
+#Did a quick check to see if any of the true strains have NA values for the high gain.
+colonyquickcheck <- df_HiLo %>% anti_join(., BorderColonies) %>%
+  filter(ORF != "BORDER") %>%
+  summarise(NA_Check_mNG = is.na(median(mNG)))
+#From the table above, for mNG signal, all true strains were measured at high gain including reference strains.
+
+
+#The plots below illustrate another issue that the gain ratio calculation for some plates were not similar to the rest
+#grid.arrange(
+#  ggplot(df_HiLo %>% anti_join(., BorderColonies) %>%
+#           filter(ORF != "BORDER"), aes(paste(IncTemp, Rep, carbonsource, Day, Notes, sep = "_"), mCherry)) +
+#    geom_boxplot(fill = "red") + #geom_jitter() +
+#    labs(x = "Plate", y = "mCH", title = "All border colonies removed") +
+#    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ,
+  ggplot(df_HiLo %>% anti_join(., BorderColonies) %>%
+           filter(ORF != "BORDER"), aes(as.factor(plate_1536),mNG)) +
+    geom_boxplot(fill = "darkgreen") + #geom_jitter() +
+    labs(x = "Plate", y = "mNG", title = "All border colonies removed") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ,
+  nrow = 2)
+
+
+grid.arrange(
+  ggplot(df_HiLo %>% anti_join(., BorderColonies) %>%
+    filter(ORF != "BORDER"), 
+   aes(as.factor(plate_1536),log10(mNGLo))) +
+      geom_boxplot(fill = "darkgreen") + geom_hline(yintercept = 2, col = "blue", size = 1.5, lty = 2) +
+      labs(x = "Plate", y = "mNGLo", title = "All border colonies removed") +
+    scale_y_continuous(limits = c(1,5), breaks = seq(0,5,1)) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  ,
+  ggplot(df_HiLo %>% anti_join(., BorderColonies) %>%
+    filter(ORF != "BORDER"), aes(as.factor(plate_1536),log10(mNGHi))) +
+      geom_boxplot(fill = "darkgreen") + geom_hline(yintercept = 2, col = "blue", size = 1.5, lty = 2) +
+      labs(x = "Plate", y = "mNGHi", title = "All border colonies removed") +
+    scale_y_continuous(limits = c(1,5), breaks = seq(0,5,1)) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  , nrow = 2)
+
+#While probably it is the best that no gain adjustment is done.
+# The codes below does not adjust the positions that already have a high gain reading so it also does not affect much of the values measured.
+
+
+#Calculating the SD, mean and median for HiLo-ratio of red and green signals
+#Check to make sure the median and mean are not too different
+# sdred <- round(sd(df_HiLo$mCherry, na.rm=T), digits=4)
+# avgred <- round(mean(df_HiLo$mCherry, na.rm=T), digits=4)
+# medred <- round(median(df_HiLo$mCherry, na.rm=T), digits=4)
+
+sdgreen <- round(sd(df_HiLo$mNG, na.rm=T), digits=4)
+avggreen <- round(mean(df_HiLo$mNG, na.rm=T), digits=4)
+medgreen <- round(median(df_HiLo$mNG, na.rm=T), digits=4)
+
+
+# paste0("mCherry: ","SD=",sdred," | Mean=",avgred," | Median=",medred)
+paste0("mNG: ","SD=",sdgreen," | Mean=",avggreen," | Median=",medgreen)
+
+#Creating backup
+df_HiLoORI <- df_HiLo #as backup
+df_HiLo <- df_HiLoORI #to revert
+
+#Using the ratio to calculate high gain values for all observations
+df_HiLo <- df_HiLo %>%
+  mutate(#mCherry = ifelse(is.na(mCherry), mCherryLo*medred, mCherryHi),
+         mNG = ifelse(is.na(mNG), mNGLo*medgreen, mNGHi))
+
+#To check if correctly done, should not see blue at lower intensities, but only purple (blue+red)
+#It is possible to have a blue tail at the higher intensities where a lot of high gain values were missing(NA)
+ggplot(data=df_HiLo) + geom_histogram(aes(log10(mNG)), bins=100, fill="blue", alpha=0.9) + 
+  geom_histogram(aes(log10(mNGHi)), bins=100, fill="red", alpha=0.5)
+
+#Removing the individual high and low gain columns 
+df <- df_HiLo %>%
+  select(-mNGLo,-mNGHi)
+
+save(df, file = "dataTableRaw_GainAdj.rda")
+
+```
+
+# R Studio Session Info
+
+```{r Session info}
+sessionInfo()
+
+```

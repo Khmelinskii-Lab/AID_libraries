@@ -1,0 +1,832 @@
+---
+title: "Gal1pr-OsTIR1 AID*-3Myc library check"
+subtitle: "Data: Pre-analysis and Data read-in"
+author: "EG"
+date: "September 06, 2023"
+output: 
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+editor_options:
+  chunk_output_type: console
+---
+
+```{r Knitr Setup}
+#The below command can be added to the section above for a different output.
+#runtime: shiny
+
+#Setting the default knitr options for each chunk here.
+#"warning" and "message" settings are set to F as the codes are pre-reviewed
+#If running a new dataset, this can be changed to true to see all/any problems
+#"error" is set to T so that the output is made and error checking can be done
+knitr::opts_chunk$set(echo = TRUE, fig.width = 20, fig.height = 12,
+                      warning = FALSE, message = FALSE, error = TRUE) 
+```
+
+```{r General Setup}
+#Set working directory
+setwd("~/Downloads/AID_libraries_3_AIDv2")
+PrimaryDirectory = getwd()
+
+#Load needed packages
+library(tidyverse)
+library(openxlsx)
+library(gitter)
+library(gridExtra)
+library(magick)
+
+#Set ggplot theme
+theme_set(theme_light(base_size=16))
+doc_theme <- theme_get()
+
+#Loading "Alphabet" list
+alphabet1536 <- c("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L",
+                  "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X",
+                  "Y", "Z", "AA", "AB", "AC", "AD", "AE", "AF")
+
+alphabet1536_rev <- 1:length(alphabet1536)
+names(alphabet1536_rev) <- alphabet1536
+
+#Loading the Experiment's annotation file
+load("20220624_AID_anno.rda")
+
+#Loading border colonies list
+BorderColonies <- read.xlsx("BorderColoniesList.xlsx", startRow = 1, colNames = TRUE, sheet = "Sheet1")
+
+```
+
+```{r Data directories}
+raw_img_folder <- "02_raw_photographs"
+analysis_folder <- "04_analysis"
+plots_folder <- "05_plots"
+
+```
+
+
+```{r Functions}
+#Function for converting phenobooth images from png to jpeg
+convertImages_batch <- function(filedirectory_input, sourcePattern, filedirectory_output, crop_size = NULL, brightness_val = 80){
+  
+  require(magick)
+  
+  #folders
+  input_folder <- filedirectory_input
+  output_folder <- filedirectory_output
+  print(paste0("Input folder:", input_folder))
+  print(paste0("Output folder:", output_folder))
+  
+  #files
+  inputfilelist <- dir(input_folder, pattern = sourcePattern)
+  #print(inputfilelist)
+  outputfilelist <- dir(output_folder, pattern = ".jpeg")
+  #print(outputfilelist)
+  
+  #Check if there is already files at the output folder with the expected same name.
+  inputlist <- str_sub(inputfilelist, 1, -5)
+  outputlist <- str_sub(outputfilelist, 1, -6)
+  
+  if(any(inputlist %in% outputlist)){
+    userCheck <- readline("WARNING. There are files in the output folder
+                          with very similar names. Files will be overwritten.
+                          Proceed? (T/F)")
+    if(userCheck == "F" | userCheck == "f"){
+      stop("User aborted run.")
+    } else if(userCheck == "T" | userCheck == "t"){} else {
+        stop("Unknown command. Exiting function.")}
+  }
+  
+  #Crop sizes
+  if(!is.null(crop_size)) {
+    eff_crop_size <- crop_size
+    print(paste0("Crop size is user defined as:", eff_crop_size))
+  } else if(is.null(crop_size)) {
+    print(paste0("No crop size defined. Running based on input image size."))
+  }
+
+  #Do the conversion
+  for (p in 1:length(inputfilelist)) {
+    
+    inputfilename <- paste(input_folder, inputfilelist[p], sep = "/")
+    img <- image_read(path = inputfilename, strip = T)
+    
+    image_size_table <- image_info(img)
+    if(is.null(crop_size)){
+      image_width <- image_size_table$width
+      image_height <- image_size_table$height
+      print(paste("Input image has measurements of width x height:", image_width,"x", image_height))
+      
+      if(image_width == 2560 & image_height == 1920) {
+        eff_crop_size <- "1480x990+530+420" #For 2560x1920
+        
+      } else if(image_width == 4128 & image_height == 3096) {
+        eff_crop_size <- "2400x1600+850+680" #For 4128x3096
+        
+      } else if(image_width == 1280 & image_height == 960) {
+      eff_crop_size <- "744x496+265+210" #For 1280x960
+        
+      } else {
+        print(paste("Image size is not within pre-defined formats.",
+                    "Please provide values for the crop size needed.",
+                    "See ?image_crop.",
+                    "Skipping file:", inputfilelist[p]))
+      }
+    }
+    
+    if(!is.null(eff_crop_size)) {
+      img2 <- image_crop(img, eff_crop_size)
+      img3 <- image_convert(img2, type = 'grayscale')
+      img4 <- image_modulate(img3, brightness = brightness_val)
+      
+      outputfilename <- paste0(paste(output_folder, str_sub(inputfilelist[p], 1, -5), sep = "/"), ".jpeg")
+      image_write(image = img4, path = outputfilename, format = "jpeg", quality = 100)
+    }
+    
+  }
+  
+  #Clear memory after opening and converting large files
+  ## Maybe I have to move this into the loop above instead of at the end.
+  gc(verbose = FALSE)
+  
+}
+
+convertImages_single <- function(filedirectory_input, filename_input, filedirectory_output, crop_size = NULL, brightness_val = 80){
+  
+  require(magick)
+  
+  #folders
+  input_folder <- filedirectory_input
+  output_folder <- filedirectory_output
+  print(paste0("Input folder:", input_folder))
+  print(paste0("Output folder:", output_folder))
+  
+  #files
+  outputfilelist <- dir(output_folder, pattern = ".jpeg")
+  
+  #Check if there is already files at the output folder with the expected same name.
+  inputlist <- str_sub(filename_input, 1, -5)
+  outputlist <- str_sub(outputfilelist, 1, -6)
+  
+  if(any(inputlist %in% outputlist)){
+    userCheck <- readline("WARNING. There are files in the output folder
+                          with very similar names. Files will be overwritten.
+                          Proceed? (T/F)")
+    if(userCheck == "F" | userCheck == "f"){
+      stop("User aborted run.")
+    } else if(userCheck == "T" | userCheck == "t"){} else {
+        stop("Unknown command. Exiting function.")}
+  }
+  
+  #Crop sizes
+  if(!is.null(crop_size)) {
+    eff_crop_size <- crop_size
+    print(paste0("Crop size is user defined as:", eff_crop_size))
+  } else if(is.null(crop_size)) {
+    print(paste0("No crop size defined. Running based on input image size."))
+  }
+
+  #Do the conversion
+  inputfilename <- paste(input_folder, filename_input, sep = "/")
+  img <- image_read(path = inputfilename, strip = T)
+  
+  image_size_table <- image_info(img)
+  if(is.null(crop_size)){
+    image_width <- image_size_table$width
+    image_height <- image_size_table$height
+    print(paste("Input image has measurements of width x height:", image_width,"x", image_height))
+    
+    if(image_width == 2560 & image_height == 1920) {
+      eff_crop_size <- "1480x990+530+420" #For 2560x1920
+      
+    } else if(image_width == 4128 & image_height == 3096) {
+      eff_crop_size <- "2400x1600+850+680" #For 4128x3096
+      
+    } else if(image_width == 1280 & image_height == 960) {
+      eff_crop_size <- "744x496+265+210" #For 1280x960
+      
+    } else {
+      gc(verbose = FALSE)
+      stop(paste("Image size is not within pre-defined formats.",
+                  "Please provide values for the crop size needed.",
+                  "See ?image_crop.",
+                  "Skipping file:", filename_input))
+    }
+  }
+  
+  img2 <- image_crop(img, eff_crop_size)
+  img3 <- image_convert(img2, type = 'grayscale')
+  img4 <- image_modulate(img3, brightness = brightness_val)
+  
+  outputfilename <- paste0(paste(output_folder, str_sub(filename_input, 1, -5), sep = "/"), ".jpeg")
+  image_write(image = img4, path = outputfilename, format = "jpeg", quality = 100)
+  
+  
+  #Clear memory after opening and converting large files
+  ## Maybe I have to move this into the loop above instead of at the end.
+  gc(verbose = FALSE)
+  
+}
+
+```
+
+This document contains the workflow for read-in of phenobooth images of the AID library check performed. The strains that were produced after crossing the C-SWAT library with the AID tag donor strain. The AID library strain is then pinned onto agar with IAA to induce the degron. This experiments has 4 different replicates.
+
+# Image data
+
+## Photograph Segmentation
+
+```{r photoseg, include = FALSE, eval = FALSE}
+#Segment hygromycin selection photographs
+raw_img_folder_Hyg <- paste(PrimaryDirectory, raw_img_folder, "20230801_Hyg_Selection2_AID-3Myc/Images", sep = "/")
+analysis_folder_Hyg <- paste(PrimaryDirectory, analysis_folder, "20230801_Hyg_Selection2_AID-3Myc", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_Hyg, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_Hyg, brightness_val = 50)
+
+#head(dir(analysis_folder_Hyg, pattern=".jpeg"))
+setwd(analysis_folder_Hyg)
+gitter.batch(analysis_folder_Hyg, plate.format=384, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_Hyg, dat.save=analysis_folder_Hyg)
+
+#setwd(analysis_folder_Hyg)
+nPlates <- 24
+photoNamesHyg <- dir(analysis_folder_Hyg, pattern = "jpeg.dat")
+photoDataHyg <- data.frame()
+for (i in 1:nPlates) {
+  photoHyg <- gitter.read(photoNamesHyg[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataHyg <- bind_rows(photoDataHyg, photoHyg)
+}
+names(photoDataHyg)[3:4] <- c("sizeHyg","circularityHyg")
+setwd(PrimaryDirectory)
+save(photoDataHyg, file = "photoData_Hyg.rda")
+
+
+
+#Segment ctrl day 1 photographs 
+raw_img_folder_ctrl_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_control", sep = "/")
+analysis_folder_ctrl_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_control", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_ctrl_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_ctrl_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_ctrl_d1, pattern=".jpeg"))
+setwd(analysis_folder_ctrl_d1)
+gitter.batch(analysis_folder_ctrl_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_ctrl_d1, dat.save=analysis_folder_ctrl_d1)
+
+#setwd(analysis_folder_ctrl_d1)
+nPlates <- 24
+photoNamesctrl_d1 <- dir(analysis_folder_ctrl_d1, pattern = "jpeg.dat")
+photoDatactrl_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoctrl_d1 <- gitter.read(photoNamesctrl_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDatactrl_d1 <- bind_rows(photoDatactrl_d1, photoctrl_d1)
+}
+names(photoDatactrl_d1)[3:4] <- c("sizectrl_d1","circularityctrl_d1")
+setwd(PrimaryDirectory)
+save(photoDatactrl_d1, file = "photoData_ctrl_d1.rda")
+
+#SEE WITH JOHN; IMAGE NUMBER 4 IS NOT READING 
+
+
+#Segment ctrl day 2 photographs 
+raw_img_folder_ctrl_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_control", sep = "/")
+analysis_folder_ctrl_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_control", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_ctrl_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_ctrl_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_ctrl_d2, pattern=".jpeg"))
+setwd(analysis_folder_ctrl_d2)
+gitter.batch(analysis_folder_ctrl_d2, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_ctrl_d2, dat.save=analysis_folder_ctrl_d2)
+
+#setwd(analysis_folder_ctrl_d2)
+nPlates <- 24
+photoNamesctrl_d2 <- dir(analysis_folder_ctrl_d2, pattern = "jpeg.dat")
+photoDatactrl_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoctrl_d2 <- gitter.read(photoNamesctrl_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDatactrl_d2 <- bind_rows(photoDatactrl_d2, photoctrl_d2)
+}
+names(photoDatactrl_d2)[3:4] <- c("sizectrl_d2","circularityctrl_d2")
+setwd(PrimaryDirectory)
+save(photoDatactrl_d2, file = "photoData_ctrl_d2.rda")
+
+
+
+
+
+#Segment 1um IAA day 1 photographs
+raw_img_folder_IAA_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA/Images", sep = "/")
+analysis_folder_IAA_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_IAA_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_IAA_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_IAA_d1, pattern=".jpeg"))
+setwd(analysis_folder_IAA_d1)
+gitter.batch(analysis_folder_IAA_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_IAA_d1, dat.save=analysis_folder_IAA_d1)
+
+#setwd(analysis_folder_IAA_d1)
+nPlates <- 24
+photoNamesIAA_d1 <- dir(analysis_folder_IAA_d1, pattern = "jpeg.dat")
+photoDataIAA_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoIAA_d1 <- gitter.read(photoNamesIAA_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataIAA_d1 <- bind_rows(photoDataIAA_d1, photoIAA_d1)
+}
+names(photoDataIAA_d1)[3:4] <- c("sizeIAA_d1","circularityIAA_d1")
+setwd(PrimaryDirectory)
+save(photoDataIAA_d1, file = "photoData_IAA_d1.rda")
+
+
+
+#Segment 1um IAA day 2 photographs
+raw_img_folder_IAA_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA/Images", sep = "/")
+analysis_folder_IAA_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_IAA_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_IAA_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_IAA_d2, pattern=".jpeg"))
+setwd(analysis_folder_IAA_d2)
+gitter.batch(analysis_folder_IAA_d2, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_IAA_d2, dat.save=analysis_folder_IAA_d2)
+
+#setwd(analysis_folder_IAA_d2)
+nPlates <- 24
+photoNamesIAA_d2 <- dir(analysis_folder_IAA_d2, pattern = "jpeg.dat")
+photoDataIAA_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoIAA_d2 <- gitter.read(photoNamesIAA_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataIAA_d2 <- bind_rows(photoDataIAA_d2, photoIAA_d2)
+}
+names(photoDataIAA_d2)[3:4] <- c("sizeIAA_d2","circularityIAA_d2")
+setwd(PrimaryDirectory)
+save(photoDataIAA_d2, file = "photoData_IAA_d2.rda")
+
+
+
+#Segment CPT day 1  photographs
+raw_img_folder_CPT_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA_CPT/Images", sep = "/")
+analysis_folder_CPT_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA_CPT", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_CPT_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_CPT_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_CPT_d1, pattern=".jpeg"))
+setwd(analysis_folder_CPT_d1)
+gitter.batch(analysis_folder_CPT_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_CPT_d1, dat.save=analysis_folder_CPT_d1)
+
+#setwd(analysis_folder_CPT_d1)
+nPlates <- 24
+photoNamesCPT_d1 <- dir(analysis_folder_CPT_d1, pattern = "jpeg.dat")
+photoDataCPT_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoCPT_d1 <- gitter.read(photoNamesCPT_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataCPT_d1 <- bind_rows(photoDataCPT_d1, photoCPT_d1)
+}
+names(photoDataCPT_d1)[3:4] <- c("sizeCPT_d1","circularityCPT_d1")
+setwd(PrimaryDirectory)
+save(photoDataCPT_d1, file = "photoData_CPT_d1.rda")
+
+
+
+#Segment CPT day 2  photographs
+raw_img_folder_CPT_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA_CPT/Images", sep = "/")
+analysis_folder_CPT_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA_CPT", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_CPT_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_CPT_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_CPT_d2, pattern=".jpeg"))
+setwd(analysis_folder_CPT_d2)
+gitter.batch(analysis_folder_CPT_d2, plate.format=1536, verbose="p", contrast = 1E-100, remove.noise = T,
+             grid.save=analysis_folder_CPT_d2, dat.save=analysis_folder_CPT_d2)
+
+#setwd(analysis_folder_CPT_d2)
+nPlates <- 24
+photoNamesCPT_d2 <- dir(analysis_folder_CPT_d2, pattern = "jpeg.dat")
+photoDataCPT_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoCPT_d2 <- gitter.read(photoNamesCPT_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataCPT_d2 <- bind_rows(photoDataCPT_d2, photoCPT_d2)
+}
+names(photoDataCPT_d2)[3:4] <- c("sizeCPT_d2","circularityCPT_d2")
+setwd(PrimaryDirectory)
+save(photoDataCPT_d2, file = "photoData_CPT_d2.rda")
+
+#Could not run the gitter in all of them - I will not use them
+
+
+
+
+#Segment CPT_IAA day 1 photographs
+raw_img_folder_CPT_IAA_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA_CPT_IAA", sep = "/")
+analysis_folder_CPT_IAA_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA_CPT_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_CPT_IAA_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_CPT_IAA_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_CPT_IAA_d1, pattern=".jpeg"))
+setwd(analysis_folder_CPT_IAA_d1)
+gitter.batch(analysis_folder_CPT_IAA_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_CPT_IAA_d1, dat.save=analysis_folder_CPT_IAA_d1)
+
+#setwd(analysis_folder_CPT_IAA_d1)
+nPlates <- 24
+photoNamesCPT_IAA_d1 <- dir(analysis_folder_CPT_IAA_d1, pattern = "jpeg.dat")
+photoDataCPT_IAA_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoCPT_IAA_d1 <- gitter.read(photoNamesCPT_IAA_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataCPT_IAA_d1 <- bind_rows(photoDataCPT_IAA_d1, photoCPT_IAA_d1)
+}
+names(photoDataCPT_IAA_d1)[3:4] <- c("sizeCPT_IAA_d1","circularityCPT_IAA_d1")
+setwd(PrimaryDirectory)
+save(photoDataCPT_IAA_d1, file = "photoData_CPT_IAA_d1.rda")
+
+
+
+
+#Segment CPT_IAA day 2 photographs
+raw_img_folder_CPT_IAA_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA_CPT_IAA", sep = "/")
+analysis_folder_CPT_IAA_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA_CPT_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_CPT_IAA_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_CPT_IAA_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_CPT_IAA_d2, pattern=".jpeg"))
+setwd(analysis_folder_CPT_IAA_d2)
+gitter.batch(analysis_folder_CPT_IAA_d2, plate.format=1536, verbose="p", contrast = 1E-100, remove.noise = T,
+             grid.save=analysis_folder_CPT_IAA_d2, dat.save=analysis_folder_CPT_IAA_d2)
+
+#setwd(analysis_folder_CPT_IAA_d1)
+nPlates <- 24
+photoNamesCPT_IAA_d2 <- dir(analysis_folder_CPT_IAA_d2, pattern = "jpeg.dat")
+photoDataCPT_IAA_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoCPT_IAA_d2 <- gitter.read(photoNamesCPT_IAA_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataCPT_IAA_d2 <- bind_rows(photoDataCPT_IAA_d2, photoCPT_IAA_d2)
+}
+names(photoDataCPT_IAA_d2)[3:4] <- c("sizeCPT_IAA_d2","circularityCPT_IAA_d2")
+setwd(PrimaryDirectory)
+save(photoDataCPT_IAA_d2, file = "photoData_CPT_IAA_d2.rda")
+
+#Could not run the gitter in all of them - I will not use them
+
+
+
+#Segment HU day 1 photographs
+raw_img_folder_HU_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA_HU/Images", sep = "/")
+analysis_folder_HU_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA_HU", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_HU_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_HU_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_HU_d1, pattern=".jpeg"))
+setwd(analysis_folder_HU_d1)
+gitter.batch(analysis_folder_HU_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_HU_d1, dat.save=analysis_folder_HU_d1)
+
+#setwd(analysis_folder_HU_d1)
+nPlates <- 24
+photoNamesHU_d1 <- dir(analysis_folder_HU_d1, pattern = "jpeg.dat")
+photoDataHU_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoHU_d1 <- gitter.read(photoNamesHU_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataHU_d1 <- bind_rows(photoDataHU_d1, photoHU_d1)
+}
+names(photoDataHU_d1)[3:4] <- c("sizeHU_d1","circularityHU_d1")
+setwd(PrimaryDirectory)
+save(photoDataHU_d1, file = "photoData_HU_d1.rda")
+
+
+
+
+#Segment HU day 2 photographs
+raw_img_folder_HU_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA_HU/Images", sep = "/")
+analysis_folder_HU_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA_HU", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_HU_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_HU_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_HU_d2, pattern=".jpeg"))
+setwd(analysis_folder_HU_d2)
+gitter.batch(analysis_folder_HU_d2, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_HU_d2, dat.save=analysis_folder_HU_d2)
+
+#setwd(analysis_folder_HU_d2)
+nPlates <- 24
+photoNamesHU_d2 <- dir(analysis_folder_HU_d2, pattern = "jpeg.dat")
+photoDataHU_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoHU_d2 <- gitter.read(photoNamesHU_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataHU_d2 <- bind_rows(photoDataHU_d2, photoHU_d2)
+}
+names(photoDataHU_d2)[3:4] <- c("sizeHU_d2","circularityHU_d2")
+setwd(PrimaryDirectory)
+save(photoDataHU_d2, file = "photoData_HU_d2.rda")
+
+
+
+#Segment HU_IAA day 1 photographs
+raw_img_folder_HU_IAA_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA_HU_IAA", sep = "/")
+analysis_folder_HU_IAA_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA_HU_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_HU_IAA_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_HU_IAA_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_HU_IAA_d1, pattern=".jpeg"))
+setwd(analysis_folder_HU_IAA_d1)
+gitter.batch(analysis_folder_HU_IAA_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_HU_IAA_d1, dat.save=analysis_folder_HU_IAA_d1)
+
+#setwd(analysis_folder_HU_IAA_d1)
+nPlates <- 24
+photoNamesHU_IAA_d1 <- dir(analysis_folder_HU_IAA_d1, pattern = "jpeg.dat")
+photoDataHU_IAA_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoHU_IAA_d1 <- gitter.read(photoNamesHU_IAA_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataHU_IAA_d1 <- bind_rows(photoDataHU_IAA_d1, photoHU_IAA_d1)
+}
+names(photoDataHU_IAA_d1)[3:4] <- c("sizeHU_IAA_d1","circularityHU_IAA_d1")
+setwd(PrimaryDirectory)
+save(photoDataHU_IAA_d1, file = "photoData_HU_IAA_d1.rda")
+
+
+
+#Segment HU_IAA day 2 photographs
+raw_img_folder_HU_IAA_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA_HU_IAA", sep = "/")
+analysis_folder_HU_IAA_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA_HU_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_HU_IAA_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_HU_IAA_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_HU_IAA_d2, pattern=".jpeg"))
+setwd(analysis_folder_HU_IAA_d2)
+gitter.batch(analysis_folder_HU_IAA_d2, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_HU_IAA_d2, dat.save=analysis_folder_HU_IAA_d2)
+
+#setwd(analysis_folder_HU_IAA_d2)
+nPlates <- 24
+photoNamesHU_IAA_d2 <- dir(analysis_folder_HU_IAA_d2, pattern = "jpeg.dat")
+photoDataHU_IAA_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoHU_IAA_d2 <- gitter.read(photoNamesHU_IAA_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataHU_IAA_d2 <- bind_rows(photoDataHU_IAA_d2, photoHU_IAA_d2)
+}
+names(photoDataHU_IAA_d2)[3:4] <- c("sizeHU_IAA_d2","circularityHU_IAA_d2")
+setwd(PrimaryDirectory)
+save(photoDataHU_IAA_d2, file = "photoData_HU_IAA_d2.rda")
+
+
+
+#Segment MMS day 1 photographs
+raw_img_folder_MMS_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA_MMS/Images", sep = "/")
+analysis_folder_MMS_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA_MMS", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_MMS_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_MMS_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_MMS_d1, pattern=".jpeg"))
+setwd(analysis_folder_MMS_d1)
+gitter.batch(analysis_folder_MMS_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_MMS_d1, dat.save=analysis_folder_MMS_d1)
+
+#setwd(analysis_folder_MMS_d1)
+nPlates <- 24
+photoNamesMMS_d1 <- dir(analysis_folder_MMS_d1, pattern = "jpeg.dat")
+photoDataMMS_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoMMS_d1 <- gitter.read(photoNamesMMS_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataMMS_d1 <- bind_rows(photoDataMMS_d1, photoMMS_d1)
+}
+names(photoDataMMS_d1)[3:4] <- c("sizeMMS_d1","circularityMMS_d1")
+setwd(PrimaryDirectory)
+save(photoDataMMS_d1, file = "photoData_MMS_d1.rda")
+
+
+
+#Segment MMS day 2 photographs
+raw_img_folder_MMS_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA_MMS/Images", sep = "/")
+analysis_folder_MMS_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA_MMS", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_MMS_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_MMS_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_MMS_d2, pattern=".jpeg"))
+setwd(analysis_folder_MMS_d2)
+gitter.batch(analysis_folder_MMS_d2, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_MMS_d2, dat.save=analysis_folder_MMS_d2)
+
+#setwd(analysis_folder_MMS_d2)
+nPlates <- 24
+photoNamesMMS_d2 <- dir(analysis_folder_MMS_d2, pattern = "jpeg.dat")
+photoDataMMS_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoMMS_d2 <- gitter.read(photoNamesMMS_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataMMS_d2 <- bind_rows(photoDataMMS_d2, photoMMS_d2)
+}
+names(photoDataMMS_d2)[3:4] <- c("sizeMMS_d2","circularityMMS_d2")
+setwd(PrimaryDirectory)
+save(photoDataMMS_d2, file = "photoData_MMS_d2.rda")
+
+
+
+#Segment MMS_IAA day 1 photographs
+raw_img_folder_MMS_IAA_d1 <- paste(PrimaryDirectory, raw_img_folder, "20230818_Gal1_Screen_IAA_MMS_IAA", sep = "/")
+analysis_folder_MMS_IAA_d1 <- paste(PrimaryDirectory, analysis_folder, "20230818_Gal1_Screen_IAA_MMS_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_MMS_IAA_d1, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_MMS_IAA_d1, brightness_val = 65)
+
+#head(dir(analysis_folder_MMS_IAA_d1, pattern=".jpeg"))
+setwd(analysis_folder_MMS_IAA_d1)
+gitter.batch(analysis_folder_MMS_IAA_d1, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_MMS_IAA_d1, dat.save=analysis_folder_MMS_IAA_d1)
+
+#setwd(analysis_folder_MMS_IAA_d1)
+nPlates <- 24
+photoNamesMMS_IAA_d1 <- dir(analysis_folder_MMS_IAA_d1, pattern = "jpeg.dat")
+photoDataMMS_IAA_d1 <- data.frame()
+for (i in 1:nPlates) {
+  photoMMS_IAA_d1 <- gitter.read(photoNamesMMS_IAA_d1[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataMMS_IAA_d1 <- bind_rows(photoDataMMS_IAA_d1, photoMMS_IAA_d1)
+}
+names(photoDataMMS_IAA_d1)[3:4] <- c("sizeMMS_IAA_d1","circularityMMS_IAA_d1")
+setwd(PrimaryDirectory)
+save(photoDataMMS_IAA_d1, file = "photoData_MMS_IAA_d1.rda")
+
+
+
+#Segment MMS_IAA day 2 photographs
+raw_img_folder_MMS_IAA_d2 <- paste(PrimaryDirectory, raw_img_folder, "20230819_Gal1_Screen_IAA_MMS_IAA", sep = "/")
+analysis_folder_MMS_IAA_d2 <- paste(PrimaryDirectory, analysis_folder, "20230819_Gal1_Screen_IAA_MMS_IAA", sep = "/")
+
+convertImages_batch(filedirectory_input = raw_img_folder_MMS_IAA_d2, sourcePattern = ".png",
+                    filedirectory_output = analysis_folder_MMS_IAA_d2, brightness_val = 65)
+
+#head(dir(analysis_folder_MMS_IAA_d2, pattern=".jpeg"))
+setwd(analysis_folder_MMS_IAA_d2)
+gitter.batch(analysis_folder_MMS_IAA_d2, plate.format=1536, verbose="p", contrast = 100, remove.noise = T,
+             grid.save=analysis_folder_MMS_IAA_d2, dat.save=analysis_folder_MMS_IAA_d2)
+
+#setwd(analysis_folder_MMS_IAA_d2)
+nPlates <- 24
+photoNamesMMS_IAA_d2 <- dir(analysis_folder_MMS_IAA_d2, pattern = "jpeg.dat")
+photoDataMMS_IAA_d2 <- data.frame()
+for (i in 1:nPlates) {
+  photoMMS_IAA_d2 <- gitter.read(photoNamesMMS_IAA_d2[i]) %>%
+    mutate(row1536=alphabet1536[row], plate=paste(sprintf("p%02d", i)))
+  photoDataMMS_IAA_d2 <- bind_rows(photoDataMMS_IAA_d2, photoMMS_IAA_d2)
+}
+names(photoDataMMS_IAA_d2)[3:4] <- c("sizeMMS_IAA_d2","circularityMMS_IAA_d2")
+setwd(PrimaryDirectory)
+save(photoDataMMS_IAA_d2, file = "photoData_MMS_IAA_d2.rda")
+
+
+```
+
+```{r Combine photodata}
+photoDataHyg$well <- paste0(photoDataHyg$row1536, sprintf("%02d", photoDataHyg$col))
+
+photoDatactrl_d1$well <- paste0(photoDatactrl_d1$row1536, sprintf("%02d", photoDatactrl_d1$col))
+photoDatactrl_d2$well <- paste0(photoDatactrl_d2$row1536, sprintf("%02d", photoDatactrl_d2$col))
+
+photoDataIAA_d1$well <- paste0(photoDataIAA_d1$row1536, sprintf("%02d", photoDataIAA_d1$col))
+photoDataIAA_d2$well <- paste0(photoDataIAA_d2$row1536, sprintf("%02d", photoDataIAA_d2$col))
+
+photoDataCPT_d1$well <- paste0(photoDataCPT_d1$row1536, sprintf("%02d", photoDataCPT_d1$col))
+#photoDataCPT_d2$well <- paste0(photoDataCPT_d2$row1536, sprintf("%02d", photoDataCPT_d2$col))
+
+photoDataCPT_IAA_d1$well <- paste0(photoDataCPT_IAA_d1$row1536, sprintf("%02d", photoDataCPT_IAA_d1$col))
+#photoDataCPT_IAA_d2$well <- paste0(photoDataCPT_IAA_d2$row1536, sprintf("%02d", photoDataCPT_IAA_d2$col))
+
+photoDataHU_d1$well <- paste0(photoDataHU_d1$row1536, sprintf("%02d", photoDataHU_d1$col))
+photoDataHU_d2$well <- paste0(photoDataHU_d2$row1536, sprintf("%02d", photoDataHU_d2$col))
+
+photoDataHU_IAA_d1$well <- paste0(photoDataHU_IAA_d1$row1536, sprintf("%02d", photoDataHU_IAA_d1$col))
+photoDataHU_IAA_d2$well <- paste0(photoDataHU_IAA_d2$row1536, sprintf("%02d", photoDataHU_IAA_d2$col))
+
+photoDataMMS_d1$well <- paste0(photoDataMMS_d1$row1536, sprintf("%02d", photoDataMMS_d1$col))
+photoDataMMS_d2$well <- paste0(photoDataMMS_d2$row1536, sprintf("%02d", photoDataMMS_d2$col))
+
+photoDataMMS_IAA_d1$well <- paste0(photoDataMMS_IAA_d1$row1536, sprintf("%02d", photoDataMMS_IAA_d1$col))
+photoDataMMS_IAA_d2$well <- paste0(photoDataMMS_IAA_d2$row1536, sprintf("%02d", photoDataMMS_IAA_d2$col))
+
+AID_anno$well <- paste0(AID_anno$row_1536, sprintf("%02d", AID_anno$col_1536))
+AID_anno$plate <- paste0("p", sprintf("%02d", AID_anno$plate_1536))
+
+df_temp1 <- left_join(AID_anno, photoDataHyg %>% select(plate, col, row1536, sizeHyg, circularityHyg), by = c("plate", "col_384" = "col", "row_384" = "row1536"))
+
+df_temp2 <- left_join(df_temp1, photoDatactrl_d1 %>% select(sizectrl_d1, circularityctrl_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDatactrl_d2 %>% select(sizectrl_d2, circularityctrl_d2, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataIAA_d1 %>% select(sizeIAA_d1, circularityIAA_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataIAA_d2 %>% select(sizeIAA_d2, circularityIAA_d2, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataCPT_d1 %>% select(sizeCPT_d1, circularityCPT_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataCPT_IAA_d1 %>% select(sizeCPT_IAA_d1, circularityCPT_IAA_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataHU_d1 %>% select(sizeHU_d1, circularityHU_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataHU_d2 %>% select(sizeHU_d2, circularityHU_d2, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataHU_IAA_d1 %>% select(sizeHU_IAA_d1, circularityHU_IAA_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataHU_IAA_d2 %>% select(sizeHU_IAA_d2, circularityHU_IAA_d2, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataMMS_d1 %>% select(sizeMMS_d1, circularityMMS_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataMMS_d2 %>% select(sizeMMS_d2, circularityMMS_d2, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataMMS_IAA_d1 %>% select(sizeMMS_IAA_d1, circularityMMS_IAA_d1, plate, well), by = c("plate", "well")) %>%
+  left_join(., photoDataMMS_IAA_d2 %>% select(sizeMMS_IAA_d2, circularityMMS_IAA_d2, plate, well), by = c("plate", "well")) 
+
+# Combine data frame with annotation file
+df <- df_temp2
+
+save(df, file = "dataTableRaw.rda")
+
+```
+
+```{r Quick check}
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeHyg))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeHyg), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizectrl_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizectrl_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizectrl_d2))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizectrl_d2), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeIAA_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeIAA_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeIAA_d2))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeIAA_d2), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeCPT_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeCPT_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeCPT_IAA_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeCPT_IAA_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeHU_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeHU_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeHU_d2))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeHU_d2), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeHU_IAA_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeHU_IAA_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeHU_IAA_d2))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeHU_IAA_d2), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeMMS_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeMMS_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeMMS_d2))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeMMS_d2), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeMMS_IAA_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeMMS_IAA_d1), bins = 200)
+
+ggplot() +
+  #geom_boxplot(data = df, aes(as.factor(plate), sizeMMS_IAA_d1))
+  geom_histogram(data = anti_join(df, BorderColonies), aes(sizeMMS_IAA_d2), bins = 200)
+
+```
+
+
+# R Studio Session Info
+
+```{r Session info}
+sessionInfo()
+
+```
